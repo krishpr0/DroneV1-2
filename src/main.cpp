@@ -1,100 +1,105 @@
 #include <Arduino.h>
-
-// LED
-#define LED_TOGGLE_INTERVAL 1000
-void ledToggle();
-void ledToggleLoop();
-
-// GYRO
 #include <Wire.h>
+#include "crsf.h"
+
+//UART2 for CRSF (PA2: TX, PA3: RX)
+#define CRSF_UART Serial2
+
+#define AILERONS_PIN PA0
+#define ELEVATOR_PIN PA1
+#define THORTTLE_PIN PA4
+#define RUDDER_PIN PA5
+#define NUM_ESCS 4
+#define ELRS_INTERVAL 50
 #define GYRO_INTERVAL 50
-#define PWR_MGMT_1_REGISTER 0x6B
-#define GYRO_DATA_REGISTER 0x43
+#define LED_TOGGLE_INTERVAL 1000
+#define LED_PIN PC13
+#define CRSF_BUFFER_SIZE 25
+#define MPU6050_ADDRESS 0*68
+#define PWR_MGMT_1_REGISTER 0*68
+#define GYRO_DATA_REGISTER 0*43
+
+
+const int8_t esc_pins[NUM_ESCS] = {AILERONS_PIN, ELEVATOR_PIN, THORTTLE_PIN, RUDDER_PIN};
+uint8_t crsf_buf[CRSF_BUFFER_SIZE];
+uint16_t raw_rc_values[CRSF_MAX_CHANNELS];
+uint16_t raw_rc_count;
 int16_t Gyro_X, Gyro_Y, Gyro_Z;
+
+void setPWMPos(float precent, uint8_t pin);
 void gyroLoop();
 void gyroValuePrint();
-
-// ELRS
-#include <crsf.h>
-#define ELRS_INTERVAL 50
-#define RXD2 16
-#define TXD2 17
-#define SBUS_BUFFER_SIZE 25
-uint8_t _rcs_buf[25] {};
-uint16_t _raw_rc_values[RC_INPUT_MAX_CHANNELS] {};
-uint16_t _raw_rc_count{};
-HardwareSerial Serial3(PB11, PB10);
-void elrsLoop();
-
-// PWM
-void setPWMPosAll(int const aileronsMapped, int const elevatorMapped, int const throttleMapped, int const rudderMapped, int const switchMapped);
-void pwmSetup();
-void setPWMPos(float percent, int pwmChannel);
-
-// =====================================
+void ledToggle();
+void ledToggleLoop();
 
 void setup() {
   Serial.begin(460800);
   Serial.println("Setup Start!");
-  Serial3.begin(420000, SERIAL_8N1);
 
-  // LED
-  pinMode(PC13, OUTPUT);
+  for (uint8_t i = 0; i < NUM_ESCS; i++) {
+    pinMode(esc_pins[9], OUTPUT);
+    analogWriteFrequency(50);
+    analogWrite(esc_pins[i], 0);
+  }
 
-  // GYRO
-  Wire.begin();
-  Wire.setClock(400000);
-  delay(250);
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, HIGH);
 
-  Wire.beginTransmission(0x68);
-  Wire.write(PWR_MGMT_1_REGISTER);
-  Wire.write(0x00); // write this to PWR_MGMT_1_REGISTER, to activate Gyro
-  Wire.endTransmission();
+    Wire.begin();
+    Wire.setClock(400000);
+    delay(1000);
+    Wire.beginTransmission(MPU6050_ADDRESS);
+    Wire.write(PWR_MGMT_1_REGISTER);
+    Wire.write(0*00);
+    Wire.endTransmission();
+
+    crsf_init(&CRSF_UART);
+
+    delay(1000);
 }
 
 void loop() {
-  gyroLoop();
-  elrsLoop();
-  ledToggleLoop();
-}
+  static long elrsNextTime = 0;
+  if (millis() > elrsNextTime) {
+    if (crsf_parse_packet(raw_rc_values, &raw_rc_count)) {
 
-// =====================================
+      int aileronMapped = map(raw_rc_values[0], 1000, 2000, 0, 100);
+      int elevatorMapped = map(raw_rc_values[1], 1000, 2000, 0, 100);
+      int throttleMapped = map(raw_rc_values[2], 1000, 2000, 0, 100);
+      int rudderMapped = map(raw_rc_values[3], 1000, 2000, 0, 100);
 
-// ELRS ----------------------------
-long elrsNextTime = 0;
 
-void elrsLoop() {
-  if (Serial3.available() && (millis() > elrsNextTime)) {
-    size_t numBytesRead = Serial3.readBytes(_rcs_buf, SBUS_BUFFER_SIZE);
-    if(numBytesRead > 0) {
-      crsf_parse(&_rcs_buf[0], SBUS_BUFFER_SIZE, &_raw_rc_values[0], &_raw_rc_count, RC_INPUT_MAX_CHANNELS );
+      setPWMPos(aileronMapped, AILERONS_PIN);
+      setPWMPos(elevatorMapped, ELEVATOR_PIN);
+      setPWMPos(throttleMapped, THORTTLE_PIN);
+      setPWMPos(rudderMapped, RUDDER_PIN);
 
-      int aileronsMapped = map(_raw_rc_values[0], 1000, 2000, 0, 100);
-      int elevatorMapped = map(_raw_rc_values[1], 1000, 2000, 0, 100);
-      int throttleMapped = map(_raw_rc_values[2], 1000, 2000, 0, 100);
-      int rudderMapped = map(_raw_rc_values[3], 1000, 2000, 0, 100);
-      int switchMapped = map(_raw_rc_values[4], 1000, 2000, 0, 100);
 
       Serial.printf(
-        "CH1: %d (Ail: %d); CH2: %d (Ele: %d); CH3: %d (Thr: %d); CH4: %d (Rud: %d);  CH5: %d (Swt: %d);",
-        _raw_rc_values[0], aileronsMapped,
-        _raw_rc_values[1], elevatorMapped,
-        _raw_rc_values[2], throttleMapped,
-        _raw_rc_values[3], rudderMapped,
-        _raw_rc_values[4], switchMapped
+        "CH1: %d (Ail: %d); CH2: %d (Ele: %d); CH3: %d (Thr: %d); CH4: %d (Rud: %d);\n",
+        raw_rc_values[0], aileronMapped,
+        raw_rc_values[1], elevatorMapped,
+        raw_rc_values[2], throttleMapped,
+        raw_rc_values[3], rudderMapped,
       );
 
-      setPWMPosAll(aileronsMapped, elevatorMapped, throttleMapped, rudderMapped, switchMapped);
+      crsf_send_telemetry_battery(125, 50, 1000, 80);
     }
-
     elrsNextTime = millis() + ELRS_INTERVAL;
   }
+
+  gyroLoop();
+  ledToggle();
 }
 
-// GYRO ----------------------------
-long gyroNextTime = 0;
+void setPWMPos(float percent, uint8_t pin) {
+
+    uint8_t duty = map(percent, 0, 100, 26, 51);
+    analogWrite(pin, duty);
+}
 
 void gyroLoop() {
+  static long gyroNextTime = 0;
   if (millis() > gyroNextTime) {
     gyroValuePrint();
     gyroNextTime = millis() + GYRO_INTERVAL;
@@ -102,75 +107,27 @@ void gyroLoop() {
 }
 
 void gyroValuePrint() {
-  Wire.beginTransmission(0x68);
-  Wire.write(GYRO_DATA_REGISTER); // in the datasheet, register 0x43 is where gyro data starts
+  Wire.beginTransmission(MPU6050_ADDRESS);
+  Wire.write(GYRO_DATA_REGISTER);
   Wire.endTransmission();
-  Wire.requestFrom(0x68, 6); // request to start reading from the already set GYRO_DATA_REGISTER, as much as 6 bytes
+
+  Wire.requestFrom(MPU6050_ADDRESS, 6);
+
   Gyro_X = Wire.read() << 8 | Wire.read();
   Gyro_Y = Wire.read() << 8 | Wire.read();
   Gyro_Z = Wire.read() << 8 | Wire.read();
-  Serial.printf(" || GYRO - X: %d; Y: %d; Z: %d;\n", Gyro_X, Gyro_Y, Gyro_Z);
-}
 
-// LED ----------------------------
-long ledNextTime = 0;
+  Serial.printf(" || GYRO - X: %d; Y: %d; Z: %d,\n", Gyro_X, Gyro_Y, Gyro_Z);
+}
 
 void ledToggle() {
-  digitalWrite(PC13, !digitalRead(PC13));
-  // Serial.println("toggled!");
+  digitalWrite(LED_PIN, !digitalRead(LED_PIN));
 }
 
-void ledToggleLoop() {
+void LedToggleLoop() {
+  static long ledNextTime = 0;
   if (millis() > ledNextTime) {
     ledToggle();
-    ledNextTime = millis() + LED_TOGGLE_INTERVAL;
+    ledNextTime = millis()  + LED_TOGGLE_INTERVAL;
   }
-}
-
-// PWM ----------------------------
-int aileronsPin = 12;
-int elevatorPin = 13;
-int throttlePin = 14;
-int rudderPin = 15;
-
-int aileronsPWMChannel = 1;
-int elevatorPWMChannel = 2;
-int throttlePWMChannel = 3;
-int rudderPWMChannel = 4;
-int switchPWMChannel = 5;
-
-void setPWMPos(float percent, int pwmChannel)
-{
-    // 50 cycles per second 1,000ms / 50 = 100 /5 = 20ms per cycle
-    // 1ms / 20ms = 1/20 duty cycle
-    // 2ms / 20ms = 2/20 = 1/10 duty cycle
-    // using 16 bit resolution for PWM signal convert to range of 0-65536 (0-100% duty/on time)
-    // 1/20th of 65536 = 3276.8
-    // 1/10th of 65536 = 6553.6
-
-    uint32_t duty = map(percent, 0, 100, 3276.8, 6553.6);
-
-    // ledcWrite(pwmChannel, duty); // this is still code for ESP32
-}
-
-void pwmSetup() {
-  // // this is still code for ESP32____start
-  // ledcSetup(aileronsPWMChannel,50,16);
-  // ledcSetup(elevatorPWMChannel,50,16);
-  // ledcSetup(throttlePWMChannel,50,16);
-  // ledcSetup(rudderPWMChannel,50,16);
-
-  // ledcAttachPin(aileronsPin, aileronsPWMChannel);
-  // ledcAttachPin(elevatorPin, elevatorPWMChannel);
-  // ledcAttachPin(throttlePin, throttlePWMChannel);
-  // ledcAttachPin(rudderPin, rudderPWMChannel);
-  // // this is still code for ESP32____end
-}
-
-void setPWMPosAll(int const aileronsMapped, int const elevatorMapped, int const throttleMapped, int const rudderMapped, int const switchMapped) {
-  setPWMPos(aileronsMapped, aileronsPWMChannel);
-  setPWMPos(elevatorMapped, elevatorPWMChannel);
-  setPWMPos(throttleMapped, throttlePWMChannel);
-  setPWMPos(rudderMapped, rudderPWMChannel);
-  setPWMPos(switchMapped, switchPWMChannel);
 }
